@@ -28,12 +28,63 @@ extern "C"
 {
 #endif
 
+#if !defined(__WINDOWS__) && (defined(WIN32) || defined(WIN64) || defined(_MSC_VER) || defined(_WIN32))
+#define __WINDOWS__
+#endif
+
+#ifdef __WINDOWS__
+
+/* When compiling for windows, we specify a specific calling convention to avoid issues where we are being called from a project with a different default calling convention.  For windows you have 3 define options:
+
+CJSON_HIDE_SYMBOLS - Define this in the case where you don't want to ever dllexport symbols
+CJSON_EXPORT_SYMBOLS - Define this on library build when you want to dllexport symbols (default)
+CJSON_IMPORT_SYMBOLS - Define this if you want to dllimport symbol
+
+For *nix builds that support visibility attribute, you can define similar behavior by
+
+setting default visibility to hidden by adding
+-fvisibility=hidden (for gcc)
+or
+-xldscope=hidden (for sun cc)
+to CFLAGS
+
+then using the CJSON_API_VISIBILITY flag to "export" the same symbols the way CJSON_EXPORT_SYMBOLS does
+
+*/
+
+#define CJSON_CDECL __cdecl
+#define CJSON_STDCALL __stdcall
+
+/* export symbols by default, this is necessary for copy pasting the C and header file */
+#if !defined(CJSON_HIDE_SYMBOLS) && !defined(CJSON_IMPORT_SYMBOLS) && !defined(CJSON_EXPORT_SYMBOLS)
+#define CJSON_EXPORT_SYMBOLS
+#endif
+
+#if defined(CJSON_HIDE_SYMBOLS)
+#define CJSON_PUBLIC(type)   type CJSON_STDCALL
+#elif defined(CJSON_EXPORT_SYMBOLS)
+#define CJSON_PUBLIC(type)   __declspec(dllexport) type CJSON_STDCALL
+#elif defined(CJSON_IMPORT_SYMBOLS)
+#define CJSON_PUBLIC(type)   __declspec(dllimport) type CJSON_STDCALL
+#endif
+#else /* !__WINDOWS__ */
+#define CJSON_CDECL
+#define CJSON_STDCALL
+
+#if (defined(__GNUC__) || defined(__SUNPRO_CC) || defined (__SUNPRO_C)) && defined(CJSON_API_VISIBILITY)
+#define CJSON_PUBLIC(type)   __attribute__((visibility("default"))) type
+#else
+#define CJSON_PUBLIC(type) type
+#endif
+#endif
+
 /* project version */
 #define CJSON_VERSION_MAJOR 1
 #define CJSON_VERSION_MINOR 7
-#define CJSON_VERSION_PATCH 7
+#define CJSON_VERSION_PATCH 8
 
 #include <stddef.h>
+#include <stdbool.h>
 
 /* cJSON Types: */
 #define cJSON_Invalid (0)
@@ -74,54 +125,12 @@ typedef struct cJSON
 
 typedef struct cJSON_Hooks
 {
-      void *(*malloc_fn)(size_t sz);
-      void (*free_fn)(void *ptr);
+      /* malloc/free are CDECL on Windows regardless of the default calling convention of the compiler, so ensure the hooks allow passing those functions directly. */
+      void *(CJSON_CDECL *malloc_fn)(size_t sz);
+      void (CJSON_CDECL *free_fn)(void *ptr);
 } cJSON_Hooks;
 
 typedef int cJSON_bool;
-
-#if !defined(__WINDOWS__) && (defined(WIN32) || defined(WIN64) || defined(_MSC_VER) || defined(_WIN32))
-#define __WINDOWS__
-#endif
-#ifdef __WINDOWS__
-
-/* When compiling for windows, we specify a specific calling convention to avoid issues where we are being called from a project with a different default calling convention.  For windows you have 2 define options:
-
-CJSON_HIDE_SYMBOLS - Define this in the case where you don't want to ever dllexport symbols
-CJSON_EXPORT_SYMBOLS - Define this on library build when you want to dllexport symbols (default)
-CJSON_IMPORT_SYMBOLS - Define this if you want to dllimport symbol
-
-For *nix builds that support visibility attribute, you can define similar behavior by
-
-setting default visibility to hidden by adding
--fvisibility=hidden (for gcc)
-or
--xldscope=hidden (for sun cc)
-to CFLAGS
-
-then using the CJSON_API_VISIBILITY flag to "export" the same symbols the way CJSON_EXPORT_SYMBOLS does
-
-*/
-
-/* export symbols by default, this is necessary for copy pasting the C and header file */
-#if !defined(CJSON_HIDE_SYMBOLS) && !defined(CJSON_IMPORT_SYMBOLS) && !defined(CJSON_EXPORT_SYMBOLS)
-#define CJSON_EXPORT_SYMBOLS
-#endif
-
-#if defined(CJSON_HIDE_SYMBOLS)
-#define CJSON_PUBLIC(type)   type __stdcall
-#elif defined(CJSON_EXPORT_SYMBOLS)
-#define CJSON_PUBLIC(type)   __declspec(dllexport) type __stdcall
-#elif defined(CJSON_IMPORT_SYMBOLS)
-#define CJSON_PUBLIC(type)   __declspec(dllimport) type __stdcall
-#endif
-#else /* !WIN32 */
-#if (defined(__GNUC__) || defined(__SUNPRO_CC) || defined (__SUNPRO_C)) && defined(CJSON_API_VISIBILITY)
-#define CJSON_PUBLIC(type)   __attribute__((visibility("default"))) type
-#else
-#define CJSON_PUBLIC(type) type
-#endif
-#endif
 
 /* Limits how deeply nested arrays/objects can be before cJSON rejects to parse them.
  * This is to prevent stack overflows. */
@@ -136,11 +145,14 @@ CJSON_PUBLIC(const char*) cJSON_Version(void);
 CJSON_PUBLIC(void) cJSON_InitHooks(cJSON_Hooks* hooks);
 
 /* Memory Management: the caller is always responsible to free the results from all variants of cJSON_Parse (with cJSON_Delete) and cJSON_Print (with stdlib free, cJSON_Hooks.free_fn, or cJSON_free as appropriate). The exception is cJSON_PrintPreallocated, where the caller has full responsibility of the buffer. */
+/* Param: useLazyParsing leaves sub-objects RAW and unparsed until you access them. If you have a large block of JSON and only intend on getting a couple of values out, lazy parsing will reduce the initial parsing time. */
 /* Supply a block of JSON, and this returns a cJSON object you can interrogate. */
-CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *value);
+CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *value, bool useLazyParsing);
 /* ParseWithOpts allows you to require (and check) that the JSON is null terminated, and to retrieve the pointer to the final byte parsed. */
 /* If you supply a ptr in return_parse_end and parsing fails, then return_parse_end will contain a pointer to the error so will match cJSON_GetErrorPtr(). */
-CJSON_PUBLIC(cJSON *) cJSON_ParseWithOpts(const char *value, const char **return_parse_end, cJSON_bool require_null_terminated);
+CJSON_PUBLIC(cJSON *) cJSON_ParseWithOpts(const char *value, const char **return_parse_end, cJSON_bool require_null_terminated, bool useLazyParsing);
+/* Parse JSON in file, this returns a cJSON object you can interrogate. Call cJSON_Delete when finished. */
+CJSON_PUBLIC(cJSON *) cJSON_Parse_File(const char *filePathAndName, bool useLazyParsing);
 
 /* Render a cJSON entity to text for transfer/storage. */
 CJSON_PUBLIC(char *) cJSON_Print(const cJSON *item);
@@ -152,16 +164,26 @@ CJSON_PUBLIC(char *) cJSON_PrintBuffered(const cJSON *item, int prebuffer, cJSON
 /* NOTE: cJSON is not always 100% accurate in estimating how much memory it will use, so to be safe allocate 5 bytes more than you actually need */
 CJSON_PUBLIC(cJSON_bool) cJSON_PrintPreallocated(cJSON *item, char *buffer, const int length, const cJSON_bool format);
 /* Delete a cJSON entity and all subentities. */
-CJSON_PUBLIC(void) cJSON_Delete(cJSON *item);
+CJSON_PUBLIC(void) cJSON_Delete(cJSON *c);
 
 /* Returns the number of items in an array (or object). */
 CJSON_PUBLIC(int) cJSON_GetArraySize(const cJSON *array);
 /* Retrieve item number "index" from array "array". Returns NULL if unsuccessful. */
 CJSON_PUBLIC(cJSON *) cJSON_GetArrayItem(const cJSON *array, int index);
 /* Get item "string" from object. Case insensitive. */
-CJSON_PUBLIC(cJSON *) cJSON_GetObjectItem(const cJSON * const object, const char * const string);
-CJSON_PUBLIC(cJSON *) cJSON_GetObjectItemCaseSensitive(const cJSON * const object, const char * const string);
-CJSON_PUBLIC(cJSON_bool) cJSON_HasObjectItem(const cJSON *object, const char *string);
+CJSON_PUBLIC(cJSON *) cJSON_GetObjectItem(cJSON * object, const char * const string);
+CJSON_PUBLIC(cJSON *) cJSON_GetObjectItemCaseSensitive(cJSON * object, const char * const string);
+CJSON_PUBLIC(cJSON_bool) cJSON_HasObjectItem(cJSON *object, const char *string);
+
+/* Get bool ""string" from object. Case Sensitive. */
+CJSON_PUBLIC(bool) cJSON_GetBoolItem(cJSON *object, const char *string, bool* pFound);
+/* Get string ""string" from object. Case Sensitive. */
+CJSON_PUBLIC(char*) cJSON_GetStringItem(cJSON *object, const char *string, bool* pFound);
+/* Get int ""string" from object. Case Sensitive. */
+CJSON_PUBLIC(int) cJSON_GetIntItem(cJSON *object, const char *string, bool* pFound);
+/* Get double ""string" from object. Case Sensitive. */
+CJSON_PUBLIC(double) cJSON_GetDoubleItem(cJSON *object, const char *string, bool* pFound);
+
 /* For analysing failed parses. This returns a pointer to the parse error. You'll probably need to look a few chars back to make sense of it. Defined when cJSON_Parse() returns 0. 0 when cJSON_Parse() succeeds. */
 CJSON_PUBLIC(const char *) cJSON_GetErrorPtr(void);
 
@@ -241,7 +263,6 @@ The item->next and ->prev pointers are always zero on return from Duplicate. */
 /* Recursively compare two cJSON items for equality. If either a or b is NULL or invalid, they will be considered unequal.
  * case_sensitive determines if object keys are treated case sensitive (1) or case insensitive (0) */
 CJSON_PUBLIC(cJSON_bool) cJSON_Compare(const cJSON * const a, const cJSON * const b, const cJSON_bool case_sensitive);
-
 
 CJSON_PUBLIC(void) cJSON_Minify(char *json);
 
